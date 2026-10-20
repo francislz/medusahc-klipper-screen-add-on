@@ -22,7 +22,14 @@ HEATING_COLOR = "#ff9800"
 SPOOL_REFRESH_SECONDS = 30
 STATUS_POLL_MS = 1000
 SETTINGS_FILE = "MedusaHC_screen.conf"
-MEDUSAHC_FIELDS = ["current_tool", "last_error", "operation", "sensors", "tool_count"]
+MEDUSAHC_FIELDS = [
+    "current_tool",
+    "last_error",
+    "operation",
+    "sensors",
+    "tool_count",
+    "toolchanges",
+]
 
 # Stock KlipperScreen has no styles for this panel, so it brings its own.
 # Literal colors keep it independent of the theme's named colors.
@@ -98,6 +105,7 @@ class Panel(ScreenPanel):
         # so the panel polls them itself while it is on screen.
         self._status = {}
         self.poll_timer = None
+        self._metadata_requested = set()
         self.tools = list(range(int(self.medusahc.get("tool_count", 0))))
         self.spools = {}
         self.cards = {}
@@ -194,6 +202,19 @@ class Panel(ScreenPanel):
             logging.exception(f"MedusaHC: could not read {path}")
         return parser
 
+    def toolchanges_total(self):
+        """Slicer's "total filament change" of the file being printed, or None."""
+        filename = self._printer.get_stat("print_stats", "filename")
+        if not filename:
+            return None
+        if filename not in self._files.files:
+            # get_file_info asks Moonraker; only do it once per file
+            if filename in self._metadata_requested:
+                return None
+            self._metadata_requested.add(filename)
+        total = self._files.get_file_info(filename).get("filament_change_count")
+        return total if isinstance(total, int) else None
+
     def busy(self):
         return self._printer.state in ("printing", "paused") or (
             self.medusahc.get("operation", "idle") != "idle"
@@ -207,6 +228,7 @@ class Panel(ScreenPanel):
 
         self.labels["head"] = Gtk.Label(halign=Gtk.Align.START, hexpand=True)
         self.labels["operation"] = Gtk.Label(hexpand=True)
+        self.labels["toolchanges"] = Gtk.Label(hexpand=True, justify=Gtk.Justification.CENTER)
         self.labels["mounted"] = Gtk.Label(halign=Gtk.Align.END, hexpand=True)
         self.labels["error"] = Gtk.Label(
             wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, halign=Gtk.Align.START, no_show_all=True
@@ -226,6 +248,7 @@ class Panel(ScreenPanel):
         row = Gtk.Box(spacing=6)
         row.pack_start(self.labels["head"], True, True, 0)
         row.pack_start(self.labels["operation"], True, True, 0)
+        row.pack_start(self.labels["toolchanges"], True, True, 0)
         row.pack_start(self.labels["mounted"], True, True, 0)
         row.pack_end(drop, False, False, 0)
         row.pack_end(clean, False, False, 0)
@@ -327,6 +350,13 @@ class Panel(ScreenPanel):
             "dropping": _("Dropping"),
         }
         self.labels["operation"].set_label(operations.get(operation, operation))
+
+        total = self.toolchanges_total()
+        done = int(self.medusahc.get("toolchanges", 0) or 0)
+        title = GLib.markup_escape_text(_("Toolchanges"))
+        self.labels["toolchanges"].set_markup(
+            f"<small>{title}</small>\n{done} / {'--' if total is None else total}"
+        )
 
         current = self.current_tool()
         has_error = bool(errors) or current == SENSOR_ERROR
